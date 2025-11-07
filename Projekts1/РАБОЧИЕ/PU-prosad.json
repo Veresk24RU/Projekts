@@ -1,0 +1,508 @@
+{
+  "name": "PU-prosad",
+  "nodes": [
+    {
+      "parameters": {
+        "triggerTimes": {
+          "item": [
+            {
+              "mode": "custom",
+              "cronExpression": "00 20 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "798188be-56e5-435b-aaac-449c06474d5d",
+      "name": "Cron",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [
+        -2624,
+        528
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 10,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -2064,
+        528
+      ],
+      "id": "254072ae-47ac-47c6-bdfb-0c7ac8865454",
+      "name": "Loop Over Items"
+    },
+    {
+      "parameters": {
+        "jsCode": "const out = [];\n\nfor (const item of items) {\n  try {\n    console.log(`=== ОБРАБОТКА SECID: ${item.json.SECID || 'НЕ НАЙДЕН'} ===`);\n    \n    const securities = item.json.securities;\n    if (!securities || !securities.data || !securities.data.length) {\n      console.log(`❌ Нет данных для ${item.json.SECID}`);\n      continue;\n    }\n\n    // Ищем точное совпадение SECID (могут быть похожие инструменты)\n    let targetData = null;\n    const columns = securities.columns;\n    const secidIndex = columns.indexOf(\"secid\");\n    \n    if (secidIndex !== -1) {\n      targetData = securities.data.find(row => row[secidIndex] === item.json.SECID);\n    }\n    \n    // Если точное совпадение не найдено, берем первый результат\n    if (!targetData) {\n      targetData = securities.data[0];\n      console.log(`⚠️ Точное совпадение не найдено для ${item.json.SECID}, используем первый результат`);\n    }\n\n    const boardIndex = columns.indexOf(\"marketprice_boardid\");\n    const nameIndex = columns.indexOf(\"name\");  \n    const typeIndex = columns.indexOf(\"type\");\n    const marketIndex = columns.indexOf(\"market\");\n\n    const secid = targetData[secidIndex];\n    const boardid = targetData[boardIndex];\n    const name = targetData[nameIndex] || secid;\n    const type = targetData[typeIndex] || '';\n    const market = targetData[marketIndex] || '';\n\n    // Определяем тип инструмента и правильный market для истории\n    let instrumentType = 'Облигация';\n    let historyMarket = 'bonds'; // по умолчанию для облигаций\n    \n    // Проверяем, является ли инструмент фондом/ETF\n    if (secid === 'TPAY' || secid === 'SPAY' || \n        type.includes('fund') || type.includes('etf') || \n        market === 'shares') {\n      instrumentType = 'Фонд/ETF';\n      historyMarket = 'shares';\n    }\n\n    console.log(`✅ ${secid} (${instrumentType}) - ${name} | market: ${historyMarket} | board: ${boardid}`);\n\n    out.push({\n      json: {\n        SECID: secid,\n        BOARDID: boardid,\n        INSTRUMENT_TYPE: instrumentType,\n        NAME: name,\n        HISTORY_MARKET: historyMarket // для использования в MOEX History\n      }\n    });\n\n  } catch (e) {\n    console.log(`❌ Ошибка обработки ${item.json?.SECID}:`, e.message);\n  }\n}\n\nconsole.log(`=== ИТОГО ОБРАБОТАНО: ${out.length} инструментов ===`);\nreturn out;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1456,
+        576
+      ],
+      "id": "da49d642-85ee-4673-9461-2b99e58d1289",
+      "name": "Code_SECID&market"
+    },
+    {
+      "parameters": {
+        "jsCode": "const out = [];\n\nfor (let i = 0; i < items.length; i++) {\n  const item = items[i];\n  \n  try {\n    const history = item.json.history;\n    \n    // Пытаемся получить SECID из разных источников\n    let secid = 'UNKNOWN';\n    let name = 'UNKNOWN';\n    \n    // Сначала пробуем извлечь из истории (если есть)\n    if (history && history.data && history.data.length > 0) {\n      const cols = history.columns || [];\n      const firstRow = history.data[0] || [];\n      \n      const secidIdx = cols.indexOf(\"SECID\");\n      const shortnameIdx = cols.indexOf(\"SHORTNAME\");\n      const nameIdx = cols.indexOf(\"NAME\");\n      const titleIdx = shortnameIdx !== -1 ? shortnameIdx : (nameIdx !== -1 ? nameIdx : 2);\n      \n      if (secidIdx !== -1 && firstRow[secidIdx]) {\n        secid = firstRow[secidIdx];\n      }\n      if (titleIdx !== -1 && firstRow[titleIdx] && firstRow[titleIdx] !== secid) {\n        name = firstRow[titleIdx];\n      }\n    }\n    \n    // Если не получилось из истории, пробуем из других полей ответа\n    if (secid === 'UNKNOWN') {\n      secid = item.json.SECID || item.json.secid || 'UNKNOWN';\n    }\n    if (name === 'UNKNOWN' || name === secid) {\n      name = item.json.NAME || item.json.name || secid;\n    }\n    \n    console.log(`=== ОБРАБОТКА: ${secid} (${name}) ===`);\n    \n    if (!history || !history.data || history.data.length === 0) {\n      console.log(`❌ Нет истории для ${secid}`);\n      \n      out.push({\n        json: {\n          SECID: secid,\n          NAME: name,\n          WARNING: \"Нет данных истории торгов\",\n          DIFF: 0\n        }\n      });\n      continue;\n    }\n\n    const cols = history.columns;\n    const data = history.data;\n    \n    console.log(\"Columns:\", cols);\n    console.log(`Rows count: ${data.length}`);\n    \n    const closeIdx = cols.indexOf(\"CLOSE\");\n    const dateIdx = cols.indexOf(\"TRADEDATE\");\n    const secidIdx = cols.indexOf(\"SECID\");\n    const shortnameIdx = cols.indexOf(\"SHORTNAME\");\n    const nameIdx = cols.indexOf(\"NAME\");\n    \n    // Определяем индекс для названия (приоритет SHORTNAME, потом NAME)\n    const titleIdx = shortnameIdx !== -1 ? shortnameIdx : (nameIdx !== -1 ? nameIdx : 2);\n\n    if (closeIdx === -1) {\n      console.log(`❌ Нет колонки CLOSE для ${secid}`);\n      \n      out.push({\n        json: {\n          SECID: secid,\n          NAME: name,\n          WARNING: \"Отсутствует колонка CLOSE в данных истории\",\n          DIFF: 0\n        }\n      });\n      continue;\n    }\n\n    // Фильтруем валидные цены\n    const validRows = data.filter(row => {\n      const price = row[closeIdx];\n      return price !== null && price !== undefined && price > 0 && !isNaN(parseFloat(price));\n    });\n\n    if (validRows.length < 2) {\n      console.log(`❌ Мало данных для ${secid}: ${validRows.length} валидных из ${data.length} строк`);\n      \n      out.push({\n        json: {\n          SECID: secid,\n          NAME: name,\n          WARNING: `Недостаточно торговых дней с ценами (${validRows.length} из ${data.length})`,\n          DIFF: 0\n        }\n      });\n      continue;\n    }\n\n    const todayRow = validRows[0];\n    const yesterdayRow = validRows[1];\n    \n    const today = parseFloat(todayRow[closeIdx]);\n    const yesterday = parseFloat(yesterdayRow[closeIdx]);\n    \n    if (isNaN(today) || isNaN(yesterday) || yesterday === 0) {\n      console.log(`❌ Некорректные цены для ${secid}: today=${today}, yesterday=${yesterday}`);\n      \n      out.push({\n        json: {\n          SECID: secid,\n          NAME: name,\n          WARNING: `Некорректные цены закрытия (сегодня: ${today}, вчера: ${yesterday})`,\n          DIFF: 0\n        }\n      });\n      continue;\n    }\n    \n    const diff = ((today - yesterday) / yesterday) * 100;\n    \n    // Обновляем SECID и название из актуальных данных истории\n    const actualSecid = todayRow[secidIdx] || secid;\n    const actualName = todayRow[titleIdx] || name;\n    \n    console.log(`✅ ${actualSecid} (${actualName}): ${yesterday} → ${today} = ${diff.toFixed(2)}%`);\n\n    out.push({\n      json: {\n        SECID: actualSecid,\n        NAME: actualName,\n        DATE_TODAY: todayRow[dateIdx],\n        DATE_YESTERDAY: yesterdayRow[dateIdx],\n        CLOSE_TODAY: today,\n        CLOSE_YESTERDAY: yesterday,\n        DIFF: Number(diff.toFixed(2))\n      }\n    });\n\n  } catch (e) {\n    console.log(`❌ Критическая ошибка:`, e.message);\n    console.log(\"Stack trace:\", e.stack);\n    \n    // Пытаемся извлечь хоть какую-то информацию об инструменте\n    let errorSecid = 'ERROR';\n    let errorName = 'ERROR';\n    \n    try {\n      if (item && item.json) {\n        errorSecid = item.json.SECID || item.json.secid || 'ERROR';\n        errorName = item.json.NAME || item.json.name || errorSecid;\n        \n        // Пробуем извлечь из истории если есть\n        if (item.json.history && item.json.history.data && item.json.history.data.length > 0) {\n          const cols = item.json.history.columns || [];\n          const firstRow = item.json.history.data[0] || [];\n          const secidIdx = cols.indexOf(\"SECID\");\n          const shortnameIdx = cols.indexOf(\"SHORTNAME\");\n          const nameIdx = cols.indexOf(\"NAME\");\n          \n          if (secidIdx !== -1 && firstRow[secidIdx]) {\n            errorSecid = firstRow[secidIdx];\n          }\n          if (shortnameIdx !== -1 && firstRow[shortnameIdx]) {\n            errorName = firstRow[shortnameIdx];\n          } else if (nameIdx !== -1 && firstRow[nameIdx]) {\n            errorName = firstRow[nameIdx];\n          }\n        }\n      }\n    } catch (ex) {\n      console.log(\"Не удалось извлечь информацию об инструменте:\", ex.message);\n    }\n    \n    out.push({\n      json: {\n        SECID: errorSecid,\n        NAME: errorName,\n        ERROR: `Критическая ошибка обработки: ${e.message}`,\n        DIFF: 0\n      }\n    });\n  }\n}\n\nconsole.log(`=== ОБРАБОТАНО: ${out.length} инструментов ===`);\nconsole.log(`Успешных: ${out.filter(x => x.json.DIFF !== 0 || (!x.json.WARNING && !x.json.ERROR)).length}`);\nconsole.log(`С предупреждениями: ${out.filter(x => x.json.WARNING).length}`);\nconsole.log(`С ошибками: ${out.filter(x => x.json.ERROR).length}`);\n\nreturn out;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1456,
+        448
+      ],
+      "id": "3f2e507a-26d7-4884-af65-8c17bf221201",
+      "name": "Procent",
+      "alwaysOutputData": false,
+      "executeOnce": false
+    },
+    {
+      "parameters": {
+        "url": "=https://iss.moex.com/iss/history/engines/stock/markets/{{ $json.HISTORY_MARKET }}/securities/{{ $json.SECID }}.json",
+        "options": {},
+        "queryParametersUi": {
+          "parameter": [
+            {
+              "name": "iss.only",
+              "value": "history"
+            },
+            {
+              "name": "limit",
+              "value": "5"
+            },
+            {
+              "name": "sort_order",
+              "value": "desc"
+            }
+          ]
+        }
+      },
+      "id": "356eefd9-5b99-4397-8200-d25627631077",
+      "name": "MOEX History",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        -1680,
+        448
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const threshold = -5;  // порог в процентах\nconst all = $input.all();\n\nif (!all || all.length === 0) {\n  return [\n    {\n      json: {\n        count: 0,\n        messageDrops: null,\n        messageNone: \"✅ Нет данных для анализа\",\n        summary: \"Обработано инструментов: 0\"\n      }\n    }\n  ];\n}\n\nconst drops = [];\nconst warnings = [];\nconst errors = [];\nconst processed = all.length;\n\n// Функция для сокращения длинного названия\nfunction getShortName(fullName, secid) {\n  if (!fullName || fullName === secid) {\n    return null;\n  }\n  \n  let shortName = fullName\n    .replace(/^(ПАО |АО |ООО |БПИФ |ETF |Фонд )/gi, '')\n    .replace(/( облигации?| бонд| bond| серия .+| выпуск .+| БО-.+)$/gi, '')\n    .replace(/(\\d{2}-\\d{2}|\\d{4})$/, '')\n    .trim();\n  \n  // Берем только первые 3 слова\n  const words = shortName.split(' ');\n  if (words.length > 3) {\n    shortName = words.slice(0, 3).join(' ');\n  }\n  \n  // Максимум 30 символов\n  if (shortName.length > 30) {\n    shortName = shortName.substring(0, 30) + '...';\n  }\n  \n  return shortName;\n}\n\nfor (const item of all) {\n  const j = item.json;\n  const diff = parseFloat(j.DIFF);\n  const secid = j.SECID || 'UNKNOWN';\n  const fullName = j.NAME || secid;\n  const shortName = getShortName(fullName, secid);\n  \n  // Формируем строку с информацией об инструменте\n  const instrumentInfo = fullName !== secid && fullName !== 'UNKNOWN' ? \n    `${secid} (${shortName || fullName})` : secid;\n  \n  // Обрабатываем предупреждения и ошибки\n  if (j.WARNING) {\n    warnings.push(`${instrumentInfo}: ${j.WARNING}`);\n    continue;\n  }\n  \n  if (j.ERROR) {\n    errors.push(`${instrumentInfo}: ${j.ERROR}`);\n    continue;\n  }\n  \n  // Проверяем просадки\n  if (!isNaN(diff) && diff <= threshold) {\n    drops.push({ \n      secid, \n      diff: diff.toFixed(2), \n      shortName: shortName,\n      fullName: fullName,\n      closeToday: j.CLOSE_TODAY,\n      closeYesterday: j.CLOSE_YESTERDAY\n    });\n  }\n}\n\nlet message = '';\nlet summaryInfo = `Обработано инструментов: ${processed}`;\n\n// Формируем сообщение о просадках\nif (drops.length > 0) {\n  const dropParts = drops.map(d => {\n    // Формат: SECID название -X.XX%\n    const nameStr = d.shortName ? ` ${d.shortName}` : '';\n    return `${d.secid}${nameStr} ${d.diff}%`;\n  });\n  \n  message = `📉 Обнаружены просадки ≥ ${Math.abs(threshold)}%:\\n${dropParts.join('\\n')}`;\n  summaryInfo += `, просадок: ${drops.length}`;\n} else {\n  message = `✅ Просадок ≥ ${Math.abs(threshold)}% не обнаружено`;\n}\n\n// Добавляем информацию о предупреждениях с названиями инструментов\nif (warnings.length > 0) {\n  message += `\\n\\n⚠️ Предупреждения (${warnings.length}):\\n${warnings.slice(0, 3).join('\\n')}`;\n  if (warnings.length > 3) {\n    message += `\\n... и еще ${warnings.length - 3}`;\n  }\n  summaryInfo += `, предупреждений: ${warnings.length}`;\n}\n\n// Добавляем информацию об ошибках с названиями инструментов\nif (errors.length > 0) {\n  message += `\\n\\n❌ Ошибки (${errors.length}):\\n${errors.slice(0, 2).join('\\n')}`;\n  if (errors.length > 2) {\n    message += `\\n... и еще ${errors.length - 2}`;\n  }\n  summaryInfo += `, ошибок: ${errors.length}`;\n}\n\nconsole.log(\"=== РЕЗУЛЬТАТЫ АНАЛИЗА ===\");\nconsole.log(`Просадок: ${drops.length}`);\nconsole.log(`Предупреждений: ${warnings.length}`);\nconsole.log(`Ошибок: ${errors.length}`);\n\nreturn [\n  {\n    json: {\n      count: drops.length,\n      messageDrops: drops.length > 0 ? message : null,\n      messageNone: drops.length === 0 ? message : null,\n      summary: summaryInfo,\n      warningsCount: warnings.length,\n      errorsCount: errors.length,\n      processedCount: processed,\n      dropsData: drops\n    }\n  }\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1184,
+        448
+      ],
+      "id": "add37969-c893-499a-949b-9e6d382610b3",
+      "name": "Aggregate Drops1"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "14ee6f21-1861-4736-b483-322f286b152b",
+              "leftValue": "={{$json[\"count\"]}}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -960,
+        448
+      ],
+      "id": "ba1746c2-a7a5-4bdf-b7d7-108b173ab808",
+      "name": "Any Drops?"
+    },
+    {
+      "parameters": {
+        "chatId": "7732944652",
+        "text": "={{ $json.messageNone }}\n\n📊 {{ $json.summary }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -528,
+        624
+      ],
+      "id": "f73ec3c1-ff85-475b-bd47-1247cd1a456f",
+      "name": "No_5%",
+      "webhookId": "7ded956d-a1d8-4862-a645-179161537447",
+      "credentials": {
+        "telegramApi": {
+          "id": "NV6qSdB3UEcUDjxB",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "7732944652",
+        "text": "={{ $json.messageDrops }}\n\n📊 {{ $json.summary }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -544,
+        240
+      ],
+      "id": "d418168d-4d94-47e7-8d76-d1ec1193bba3",
+      "name": "Yes_5%",
+      "webhookId": "d685361e-4d84-4b54-b7b9-226a5502afc0",
+      "credentials": {
+        "telegramApi": {
+          "id": "NV6qSdB3UEcUDjxB",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "=https://iss.moex.com/iss/securities.json?iss.only=securities,boards,description",
+        "allowUnauthorizedCerts": true,
+        "options": {},
+        "queryParametersUi": {
+          "parameter": [
+            {
+              "name": "q",
+              "value": "={{ $json.SCEID }}"
+            },
+            {
+              "name": "iss.meta",
+              "value": "off"
+            }
+          ]
+        }
+      },
+      "id": "478d3e57-4750-4a9f-b196-c878062f0372",
+      "name": "SecID → Security Info1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        -1680,
+        576
+      ],
+      "retryOnFail": false
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "dropsData",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        -112
+      ],
+      "id": "214ac9c2-585c-41bf-9f50-fa1a254cb709",
+      "name": "Split Out"
+    },
+    {
+      "parameters": {
+        "url": "=https://iss.moex.com/iss/securities.json?q={{ $json.secid }}&iss.only=securities",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -352,
+        -112
+      ],
+      "id": "b339aa9f-bd0b-4c17-ba58-603725b9b8f1",
+      "name": "HTTP Request"
+    },
+    {
+      "parameters": {
+        "jsCode": "const out = [];\n\nfor (const item of items) {\n  try {\n    const sec = item.json.securities;\n    if (!sec || !sec.data || !sec.data.length) continue;\n\n    const cols = sec.columns;\n    const data = sec.data[0];\n\n    const res = {\n      secid: data[cols.indexOf(\"secid\")],\n      emitent_title: data[cols.indexOf(\"emitent_title\")],\n      emitent_inn: data[cols.indexOf(\"emitent_inn\")],\n    };\n\n    out.push({ json: res });\n  } catch (e) {\n    out.push({ json: { error: e.message } });\n  }\n}\n\nreturn out;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -144,
+        -112
+      ],
+      "id": "bea16830-e6b7-4abe-bffb-17789fb7082f",
+      "name": "Emitent Info"
+    },
+    {
+      "parameters": {
+        "chatId": "7732944652",
+        "text": "={{ $json.choices[0].message.content }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        400,
+        -112
+      ],
+      "id": "76522d07-a0d8-4535-8c06-cae58cf97890",
+      "name": "Send a text message",
+      "webhookId": "1d28b9e9-4014-4132-a712-91bf3004e16b",
+      "credentials": {
+        "telegramApi": {
+          "id": "NV6qSdB3UEcUDjxB",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "messages": {
+          "message": [
+            {
+              "content": "=Найди и проанализируй мнения и отзывы о текущем положении эмитента актива {{ $('Emitent Info').item.json.secid }} и о самом выпуске облигаций, используя актуальные источники информации, такие как новости, аналитические обзоры, финансовые отчеты и форумы инвесторов, что бы дать всестороннюю оценку его кредитного рейтинга, репутации, устойчивости и перспектив этого выпуска.\nконечное сообщение представь в виде удобном для поста в сообществе Telegram. В тексте сообщения не указывай сноски на номер источника информации."
+            }
+          ]
+        },
+        "options": {},
+        "requestOptions": {}
+      },
+      "type": "n8n-nodes-base.perplexity",
+      "typeVersion": 1,
+      "position": [
+        112,
+        -112
+      ],
+      "id": "55401105-5ec4-476f-9f1f-7b633b353c7c",
+      "name": "Message a model",
+      "credentials": {
+        "perplexityApi": {
+          "id": "NImkfKb8e3xH7xYl",
+          "name": "Perplexity account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "value": "wrAvyTKEv5CPA0RM",
+          "mode": "list",
+          "cachedResultName": "SCEID_PORTFOLIO",
+          "cachedResultUrl": "/projects/Q8U5Lyg2aQMd2T9K/datatables/wrAvyTKEv5CPA0RM"
+        },
+        "returnAll": true
+      },
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        -2368,
+        528
+      ],
+      "id": "fc5982f4-6cf6-4c7f-bb80-a908cf9dd6e9",
+      "name": "Get row(s)"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Cron": {
+      "main": [
+        [
+          {
+            "node": "Get row(s)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items": {
+      "main": [
+        [
+          {
+            "node": "MOEX History",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "SecID → Security Info1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_SECID&market": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Procent": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Drops1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "MOEX History": {
+      "main": [
+        [
+          {
+            "node": "Procent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Drops1": {
+      "main": [
+        [
+          {
+            "node": "Any Drops?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Drops?": {
+      "main": [
+        [
+          {
+            "node": "Yes_5%",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Split Out",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No_5%",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SecID → Security Info1": {
+      "main": [
+        [
+          {
+            "node": "Code_SECID&market",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Out": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Emitent Info",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Emitent Info": {
+      "main": [
+        [
+          {
+            "node": "Message a model",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Message a model": {
+      "main": [
+        [
+          {
+            "node": "Send a text message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get row(s)": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "da604bb4-9acc-423a-90a2-bc33745970d5",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "d166ce8727f20d161e3bd52d65ba171c04dab9070977d2e6555d1cb327e0c832"
+  },
+  "id": "eFcyWqjstZvu3fvc",
+  "tags": []
+}

@@ -1,0 +1,510 @@
+{
+  "name": "Up_Data table_DOXOD",
+  "nodes": [
+    {
+      "parameters": {
+        "events": [
+          "FILE.UPLOADED"
+        ],
+        "targetType": "folder",
+        "targetId": "345856465291"
+      },
+      "type": "n8n-nodes-base.boxTrigger",
+      "typeVersion": 1,
+      "position": [
+        -32,
+        0
+      ],
+      "id": "38f94117-e385-4217-8147-a42e0083e8ef",
+      "name": "Box Trigger",
+      "webhookId": "4b22e28d-6c2f-4b6e-bc7e-2d5a1423d8c8",
+      "credentials": {
+        "boxOAuth2Api": {
+          "id": "AhiRxexAUiclWJLU",
+          "name": "Box account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": "={{ $json.source.id }}"
+      },
+      "type": "n8n-nodes-base.box",
+      "typeVersion": 1,
+      "position": [
+        208,
+        0
+      ],
+      "id": "e1439033-ccb2-43eb-93e2-67d75e34eed6",
+      "name": "Download a file",
+      "credentials": {
+        "boxOAuth2Api": {
+          "id": "AhiRxexAUiclWJLU",
+          "name": "Box account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "options": {
+          "headerRow": true,
+          "readAsString": true
+        }
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        416,
+        0
+      ],
+      "id": "389359e8-495a-4f90-8e82-2f8aa625a04d",
+      "name": "Extract from File"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== ПОЛНЫЙ КОД ДЛЯ CODE NODE В N8N =====\n// Обработка Excel данных для загрузки в Data Table\n\nconst items = $input.all();\n\n// ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====\n\n// Функция для парсинга дат в формате GMT из Excel\nfunction parseGMTDate(dateStr) {\n  if (!dateStr || dateStr === 'null' || dateStr === '' || dateStr === 'NaN') {\n    return null;\n  }\n  \n  try {\n    const str = String(dateStr);\n    \n    // Обрабатываем формат: \"Wed Feb 06 2036 00:00:00 GMT+0300 (Москва, ста...\"\n    if (str.includes('GMT')) {\n      const datePart = str.split(' GMT')[0];\n      const parsedDate = new Date(datePart);\n      \n      if (!isNaN(parsedDate.getTime())) {\n        return parsedDate.toISOString().split('T')[0]; // Возвращаем YYYY-MM-DD\n      }\n    }\n    \n    // Попытка парсинга как обычной даты\n    const directParse = new Date(str);\n    if (!isNaN(directParse.getTime())) {\n      return directParse.toISOString().split('T')[0];\n    }\n    \n    return null;\n  } catch (error) {\n    console.log(`Ошибка парсинга даты: ${dateStr}`, error);\n    return null;\n  }\n}\n\n// Функция для безопасного парсинга чисел\nfunction parseNumber(value, isInteger = false) {\n  if (value === null || value === undefined || value === '' || \n      value === 'null' || value === 'NaN' || value === 'undefined') {\n    return null;\n  }\n  \n  // Преобразуем в строку и убираем лишние символы\n  const cleanValue = String(value).replace(/[^\\d.-]/g, '');\n  \n  if (cleanValue === '' || cleanValue === '-') {\n    return null;\n  }\n  \n  const parsed = isInteger ? parseInt(cleanValue) : parseFloat(cleanValue);\n  return isNaN(parsed) ? null : parsed;\n}\n\n// Функция для безопасной обработки строк\nfunction parseString(value) {\n  if (value === null || value === undefined || value === 'null' || value === 'undefined') {\n    return null;\n  }\n  \n  const str = String(value).trim();\n  return str === '' || str === 'NaN' ? null : str;\n}\n\n// ===== ОСНОВНАЯ ОБРАБОТКА ДАННЫХ =====\n\nconsole.log(`Обработка ${items.length} записей из Excel файла`);\n\nconst processedItems = items.map((item, index) => {\n  try {\n    const processedItem = {};\n    \n    // === ТЕКСТОВЫЕ ПОЛЯ ===\n    processedItem.актив = parseString(item.json['Актив']);\n    processedItem.название_актива = parseString(item.json['Название актива']);\n    processedItem.currency = parseString(item.json['Currency']);\n    processedItem.страна = parseString(item.json['Страна']);\n    processedItem.портфели = parseString(item.json['Портфели']);\n    processedItem.сектор = parseString(item.json['Сектор']);\n    processedItem.тип = parseString(item.json['Тип']);\n    processedItem.срок = parseString(item.json['Срок']);\n    \n    // === ЦЕЛОЧИСЛЕННЫЕ ПОЛЯ ===\n    processedItem.количество = parseNumber(item.json['Кол-во'], true);\n    processedItem.налог = parseNumber(item.json['Налог'], true);\n    processedItem.целевая_доля_портфель = parseNumber(item.json['Целевая доля в портфеле'], true);\n    processedItem.целевая_доля_категория = parseNumber(item.json['Целевая доля в категории'], true);\n    \n    // === ОСНОВНЫЕ ФИНАНСОВЫЕ ПОЛЯ ===\n    processedItem.средняя_цена = parseNumber(item.json['Средняя цена']);\n    processedItem.вложено = parseNumber(item.json['Вложено']);\n    processedItem.текущая_стоимость = parseNumber(item.json['Текущая стоимость']);\n    processedItem.стоимость_1_шт = parseNumber(item.json['Стоимость 1 шт']);\n    processedItem.средняя_цена_процент = parseNumber(item.json['Средняя цена (%)']);\n    processedItem.цена_процент = parseNumber(item.json['Цена (%)']);\n    processedItem.бета = parseNumber(item.json['Бета']);\n    \n    // === ДИВИДЕНДНЫЕ ПОЛЯ ===\n    processedItem.дивиденды = parseNumber(item.json['Дивиденды']);\n    processedItem.дивиденды_на_акцию = parseNumber(item.json['Дивиденды, на 1 акцию']);\n    processedItem.дивидендная_доходность = parseNumber(item.json['Див. доход-ть']);\n    processedItem.дивидендная_доходность_к_средней = parseNumber(item.json['Див. доход-ть к средней цене']);\n    processedItem.дивидендный_рост_5y = parseNumber(item.json['Див. рост (5Y)']);\n    processedItem.следующая_выплата = parseNumber(item.json['Следующая выплата']);\n    \n    // === ПОЛЯ ПРИБЫЛИ И ДОХОДНОСТИ ===\n    processedItem.получено_начислений = parseNumber(item.json['Получено начислений']);\n    processedItem.прибыль_от_роста = parseNumber(item.json['Прибыль от роста цены']);\n    processedItem.прибыль_от_продаж = parseNumber(item.json['Прибыль от продаж']);\n    processedItem.прибыль = parseNumber(item.json['Прибыль']);\n    processedItem.за_день = parseNumber(item.json['За день']);\n    processedItem.доходность = parseNumber(item.json['Доходность']);\n    processedItem.доля_в_портфеле = parseNumber(item.json['Доля в портфеле']);\n    processedItem.доля_в_категории = parseNumber(item.json['Доля в категории']);\n    \n    // === ОБЛИГАЦИОННЫЕ ПОЛЯ ===\n    processedItem.нкд = parseNumber(item.json['НКД']);\n    processedItem.номинал = parseNumber(item.json['Номинал']);\n    processedItem.остаточный_номинал = parseNumber(item.json['Остаточный номинал']);\n    processedItem.дюрация_риск = parseNumber(item.json['Дюрация / риск']);\n    processedItem.надежность = parseNumber(item.json['Надежность']);\n    processedItem.купонная_доходность = parseNumber(item.json['Купонная доходность']);\n    processedItem.текущая_доходность = parseNumber(item.json['Текущая доходность']);\n    processedItem.модифицированная_доходность = parseNumber(item.json['Модиф. текущая доходность']);\n    processedItem.доходность_к_погашению = parseNumber(item.json['Доходность к погашению']);\n    processedItem.доходность_к_погашению_от_средней = parseNumber(item.json['Доходность к погашению (от средней цены актива)']);\n    processedItem.эффективная_доходность = parseNumber(item.json['Эффективная доходность']);\n    processedItem.эффективная_доходность_от_средней = parseNumber(item.json['Эффективная доходность (от средней цены актива)']);\n    \n    // === ПОЛЯ ДАТ ===\n    processedItem.дата_следующей_выплаты = parseGMTDate(item.json['Дата следующей выплаты']);\n    processedItem.дивидендная_отсечка = parseGMTDate(item.json['Див. отсечка']);\n    processedItem.дата_оферты = parseGMTDate(item.json['Дата оферты']);\n    processedItem.дата_погашения = parseGMTDate(item.json['Дата погашения']);\n    \n    // === ДОПОЛНИТЕЛЬНЫЕ ПОЛЯ (если нужны) ===\n    // Эти поля в основном пустые в исходном файле, но можем их включить:\n    processedItem.заметка = parseString(item.json['Заметка']);\n    processedItem.pe = parseNumber(item.json['PE']);\n    processedItem.eps = parseNumber(item.json['EPS']);\n    processedItem.payout = parseNumber(item.json['Payout']);\n    processedItem.капитализация_usd = parseNumber(item.json['Капитализация, $']);\n    processedItem.комиссия_фонда = parseNumber(item.json['Комиссия фонда']);\n    processedItem.рейтинг = parseNumber(item.json['Рейтинг']);\n    processedItem.категория = parseNumber(item.json['Категория']);\n    \n    // Добавляем служебные поля\n    processedItem.обработано_в = new Date().toISOString();\n    processedItem.номер_записи = index + 1;\n    \n    return { json: processedItem };\n    \n  } catch (error) {\n    console.error(`Ошибка обработки записи ${index + 1}:`, error);\n    // Возвращаем запись с ошибкой для отладки\n    return { \n      json: { \n        ошибка: `Ошибка обработки записи ${index + 1}: ${error.message}`,\n        исходные_данные: item.json,\n        номер_записи: index + 1\n      } \n    };\n  }\n});\n\nconsole.log(`Успешно обработано ${processedItems.length} записей`);\nreturn processedItems;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        624,
+        0
+      ],
+      "id": "425dd397-7c2d-46d4-9aeb-9c9b33e58db4",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Финальный маппинг полей для Data Table\nconst items = $input.all();\n\nreturn items.map(item => {\n  const dataTableItem = {};\n  \n  // === ОСНОВНЫЕ ПОЛЯ ===\n  dataTableItem.SCEID = item.json.актив;\n  dataTableItem.NAME = item.json.название_актива;\n  dataTableItem.quantity = item.json.количество;\n  dataTableItem.Currency = item.json.currency;\n  dataTableItem.average_price = item.json.средняя_цена;\n  \n  // === КОМБИНИРОВАННОЕ ПОЛЕ ASSET_TYPE ===\n  // Объединяем Сектор + Тип в одно поле\n  const sector = item.json.сектор || '';\n  const type = item.json.тип || '';\n  dataTableItem.asset_type = [sector, type]\n    .filter(v => v && v !== '' && v !== 'null')\n    .join(' ');\n  \n  // === ДИВИДЕНДНЫЕ И НАЛОГОВЫЕ ПОЛЯ ===\n  dataTableItem.Dividend_profit = item.json.дивидендная_доходность_к_средней;\n  dataTableItem.future_pay = item.json.следующая_выплата;\n  dataTableItem.tax = item.json.налог;\n  dataTableItem.kupon_profit = item.json.дивиденды_на_акцию;\n  \n  // === ОБЛИГАЦИОННЫЕ ПОЛЯ ===\n  dataTableItem.nominal = item.json.остаточный_номинал;\n  dataTableItem.duration = item.json.дюрация_риск;\n  \n  // === ПОЛЯ ДАТ ===\n  dataTableItem.date_ofert = item.json.дата_оферты;\n  dataTableItem.date_pogashen = item.json.дата_погашения;\n  \n  // === ПОЛЯ ДОХОДНОСТИ ===\n  dataTableItem.now_profit = item.json.текущая_доходность;\n  dataTableItem.mod_now_profit = item.json.модифицированная_доходность;\n  dataTableItem.profiy_to_pogashen = item.json.доходность_к_погашению;\n  dataTableItem.profiy_to_pogashen_avar_price = item.json.доходность_к_погашению_от_средней;\n  dataTableItem.effectiv_profit = item.json.эффективная_доходность;\n  dataTableItem.effectiv_profit_avar_prise = item.json.эффективная_доходность_от_средней;\n  \n  return { json: dataTableItem };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        832,
+        0
+      ],
+      "id": "d8079901-dd98-40d5-864e-980e44a7d9a3",
+      "name": "Code preobrazovanie"
+    },
+    {
+      "parameters": {
+        "operation": "deleteRows",
+        "dataTableId": {
+          "__rl": true,
+          "value": "w5FDA5Emf7NAJd2O",
+          "mode": "list",
+          "cachedResultName": "Portfolio-DOXOD",
+          "cachedResultUrl": "/projects/Q8U5Lyg2aQMd2T9K/datatables/w5FDA5Emf7NAJd2O"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "condition": "gte",
+              "keyValue": "0"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        1104,
+        0
+      ],
+      "id": "97b25af8-59c5-4ae1-a5b9-9c75d8ec7cfd",
+      "name": "Delete row(s)"
+    },
+    {
+      "parameters": {
+        "dataTableId": {
+          "__rl": true,
+          "value": "w5FDA5Emf7NAJd2O",
+          "mode": "list",
+          "cachedResultName": "Portfolio-DOXOD",
+          "cachedResultUrl": "/projects/Q8U5Lyg2aQMd2T9K/datatables/w5FDA5Emf7NAJd2O"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "quantity": "={{ $json.quantity }}",
+            "average_price": "={{ $json.average_price }}",
+            "Dividend_profit": "={{ $json.Dividend_profit }}",
+            "future_pay": "={{ $json.future_pay }}",
+            "tax": "={{ $json.tax }}",
+            "nominal": "={{ $json.nominal }}",
+            "duration": "={{ $json.duration }}",
+            "kupon_profit": "={{ $json.kupon_profit }}",
+            "now_profit": "={{ $json.now_profit }}",
+            "mod_now_profit": "={{ $json.mod_now_profit }}",
+            "profit_to_pogashen": "={{ $json.profiy_to_pogashen }}",
+            "profit_to_pogash_avar_price": "={{ $json.profiy_to_pogashen_avar_price }}",
+            "effectiv_profit": "={{ $json.effectiv_profit }}",
+            "effectiv_profit_avar_prise": "={{ $json.effectiv_profit_avar_prise }}",
+            "SCEID": "={{ $json.SCEID }}",
+            "Currency": "={{ $json.Currency }}",
+            "NAME": "={{ $json.NAME }}",
+            "asset_type": "={{ $json.asset_type }}",
+            "date_ofert": "={{ $json.date_ofert }}",
+            "date_pogashen": "={{ $json.date_pogashen }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "SCEID",
+              "displayName": "SCEID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "NAME",
+              "displayName": "NAME",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "quantity",
+              "displayName": "quantity",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Currency",
+              "displayName": "Currency",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "average_price",
+              "displayName": "average_price",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "asset_type",
+              "displayName": "asset_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Dividend_profit",
+              "displayName": "Dividend_profit",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "future_pay",
+              "displayName": "future_pay",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "tax",
+              "displayName": "tax",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "nominal",
+              "displayName": "nominal",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "date_ofert",
+              "displayName": "date_ofert",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "date_pogashen",
+              "displayName": "date_pogashen",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "duration",
+              "displayName": "duration",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "kupon_profit",
+              "displayName": "kupon_profit",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "now_profit",
+              "displayName": "now_profit",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "mod_now_profit",
+              "displayName": "mod_now_profit",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "profit_to_pogashen",
+              "displayName": "profit_to_pogashen",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "profit_to_pogash_avar_price",
+              "displayName": "profit_to_pogash_avar_price",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "effectiv_profit",
+              "displayName": "effectiv_profit",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "effectiv_profit_avar_prise",
+              "displayName": "effectiv_profit_avar_prise",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        1376,
+        0
+      ],
+      "id": "078e3c41-ef1e-4720-9616-e36f59ec5138",
+      "name": "Insert row"
+    },
+    {
+      "parameters": {
+        "batchSize": 10,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1104,
+        160
+      ],
+      "id": "a2291af5-85da-4b59-b683-e8fd5b690a59",
+      "name": "Loop Over Items"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "name": "Replace Me",
+      "typeVersion": 1,
+      "position": [
+        1328,
+        256
+      ],
+      "id": "d1b0bbd5-b152-45cd-b778-450b97520d5c"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Box Trigger": {
+      "main": [
+        [
+          {
+            "node": "Download a file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download a file": {
+      "main": [
+        [
+          {
+            "node": "Extract from File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract from File": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Code preobrazovanie",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code preobrazovanie": {
+      "main": [
+        [
+          {
+            "node": "Delete row(s)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete row(s)": {
+      "main": [
+        []
+      ]
+    },
+    "Insert row": {
+      "main": [
+        []
+      ]
+    },
+    "Loop Over Items": {
+      "main": [
+        [
+          {
+            "node": "Insert row",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Replace Me",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Replace Me": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "e6b6d83c-377e-430c-a9ba-3d2ce24311f6",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "d166ce8727f20d161e3bd52d65ba171c04dab9070977d2e6555d1cb327e0c832"
+  },
+  "id": "w9RtQIKIlzR6I48B",
+  "tags": []
+}

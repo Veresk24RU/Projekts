@@ -1,0 +1,232 @@
+{
+  "name": "Google Drive → NocoDB (Current + History)",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "triggerOn": "specificFolder",
+        "folderToWatch": {
+          "__rl": true,
+          "value": "1aeRa-ktWNf8NFy3ONltQ4gBQull2p13b",
+          "mode": "list",
+          "cachedResultName": "portfeL",
+          "cachedResultUrl": "https://drive.google.com/drive/folders/1aeRa-ktWNf8NFy3ONltQ4gBQull2p13b"
+        },
+        "event": "fileCreated",
+        "options": {
+          "fileType": "all"
+        }
+      },
+      "type": "n8n-nodes-base.googleDriveTrigger",
+      "typeVersion": 1,
+      "position": [
+        -368,
+        240
+      ],
+      "id": "18d68059-8716-4272-8190-6cb30ac38170",
+      "name": "Google Drive Trigger1",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "zyEVBctK2HNc9CGu",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "value": "={{$node[\"Google Drive Trigger1\"].json[\"id\"]}}",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -128,
+        240
+      ],
+      "id": "592d8f8a-ebc7-45fc-b0da-29c17c835e8e",
+      "name": "Download file1",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "zyEVBctK2HNc9CGu",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        112,
+        240
+      ],
+      "id": "9256b0f7-6db8-4416-8c08-4071132b211f",
+      "name": "Extract from File"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Генератор UUID-подобного идентификатора\nfunction generateId() {\n  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {\n    const r = Math.random() * 16 | 0;\n    const v = c === 'x' ? r : (r & 0x3 | 0x8);\n    return v.toString(16);\n  });\n}\n\n// Один snapshot_id для всей загрузки\nconst snapshotId = generateId();\n\nreturn items.map(item => {\n  const d = item.json;\n\n  return {\n    json: {\n      upload_date: d.upload_date ? d.upload_date.toString().split('T')[0] : null,\n      ticker: d.ticker || null,\n      gos_registr: d.gos_registr || null,\n      ISIN: d.ISIN || null,\n      issuedate: d.issuedate ? d.issuedate.toString().split('T')[0] : null,\n      matdate: d.matdate ? d.matdate.toString().split('T')[0] : null,\n      offerdate: d.offerdate && d.offerdate !== 'нет оферты'\n        ? d.offerdate.toString().split('T')[0]\n        : null,\n      ostatok: d.ostatok ? parseFloat(d.ostatok) : 0,\n      currency: d.currency || null,\n      nominal: d.nominal ? parseFloat(d.nominal) : 0,\n      cena_za_1: d.cena_za_1 ? parseFloat(d.cena_za_1) : 0,\n      summ_activa_RUB: d.summ_activa_RUB ? parseFloat(d.summ_activa_RUB) : 0,\n      NKD: d.NKD ? parseFloat(d.NKD) : 0,\n      snapshot_id: snapshotId\n    }\n  };\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        320,
+        240
+      ],
+      "id": "e089a775-435f-4e97-a62e-5c17458c0ba7",
+      "name": "Code in JavaScript1"
+    },
+    {
+      "parameters": {
+        "authentication": "nocoDbApiToken",
+        "operation": "create",
+        "projectId": "YOUR_PROJECT_SLUG",
+        "table": "CurrentPortfolio",
+        "dataToSend": "autoMapInputData"
+      },
+      "id": "402ef36a-74f0-42f2-8d82-29889d258603",
+      "name": "NocoDB Insert CurrentPortfolio",
+      "type": "n8n-nodes-base.nocoDb",
+      "typeVersion": 1,
+      "position": [
+        800,
+        240
+      ],
+      "credentials": {
+        "nocoDbApiToken": {
+          "id": "gdLNmGihZWRnjCye",
+          "name": "NocoDB Token account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "createMultiple",
+        "projectId": "YOUR_PROJECT_SLUG",
+        "table": "PortfolioHistory"
+      },
+      "id": "fb6ac223-c4be-4318-8412-372fae3947ef",
+      "name": "NocoDB Insert PortfolioHistory",
+      "type": "n8n-nodes-base.nocoDb",
+      "typeVersion": 1,
+      "position": [
+        1152,
+        496
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "nocoDbApiToken",
+        "operation": "delete",
+        "workspaceId": "wt8opkgm",
+        "projectId": "pdhv5yur2nos0xg",
+        "table": "mf2um1jiib725ne",
+        "id": "={{ $json.upload_date }}"
+      },
+      "type": "n8n-nodes-base.nocoDb",
+      "typeVersion": 3,
+      "position": [
+        560,
+        240
+      ],
+      "id": "91570a44-84dc-4c1a-9e67-1ef5e56ed10f",
+      "name": "Delete All Records → CurrentPortfolio",
+      "alwaysOutputData": true,
+      "credentials": {
+        "nocoDbApiToken": {
+          "id": "gdLNmGihZWRnjCye",
+          "name": "NocoDB Token account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Google Drive Trigger1": {
+      "main": [
+        [
+          {
+            "node": "Download file1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download file1": {
+      "main": [
+        [
+          {
+            "node": "Extract from File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract from File": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript1": {
+      "main": [
+        [
+          {
+            "node": "Delete All Records → CurrentPortfolio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "NocoDB Insert CurrentPortfolio": {
+      "main": [
+        []
+      ]
+    },
+    "Delete All Records → CurrentPortfolio": {
+      "main": [
+        [
+          {
+            "node": "NocoDB Insert CurrentPortfolio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "27d5d8a7-87ce-49d6-ad15-03e83c999fd7",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "6ab2c7a42c00993decedbd487232ffe5a40cc87e68c91fa5da58d98c9a353b3b"
+  },
+  "id": "nc63REB6k6YK2Pfp",
+  "tags": []
+}

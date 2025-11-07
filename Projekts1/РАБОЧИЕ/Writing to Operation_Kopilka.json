@@ -1,0 +1,383 @@
+{
+  "name": "Writing to Operation_Kopilka",
+  "nodes": [
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": "={{ $json.source.id }}"
+      },
+      "type": "n8n-nodes-base.box",
+      "typeVersion": 1,
+      "position": [
+        240,
+        0
+      ],
+      "id": "c12a7502-28b5-4247-9718-3c1d4fa5c237",
+      "name": "Download a file",
+      "credentials": {
+        "boxOAuth2Api": {
+          "id": "AhiRxexAUiclWJLU",
+          "name": "Box account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "options": {
+          "headerRow": true,
+          "readAsString": true
+        }
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        448,
+        0
+      ],
+      "id": "f47ab199-1837-491e-9713-27a8de9b6716",
+      "name": "Extract from File"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== Transform and Clean Data =====\nconst items = $input.all();\nconst transformedItems = [];\n\n// Функция конвертации Excel serial date в ISO datetime\nfunction excelDateToISO(serial) {\n  if (!serial || serial === 0) {\n    return null;\n  }\n  \n  // Excel считает дни с 1 января 1900\n  // JavaScript Date считает миллисекунды с 1 января 1970\n  // Разница: 25569 дней\n  const utc_days = Math.floor(serial - 25569);\n  const utc_value = utc_days * 86400;\n  const fractional_day = serial - Math.floor(serial) + 0.0000001;\n  const total_seconds = Math.floor(86400 * fractional_day);\n  \n  const seconds = total_seconds % 60;\n  const hours = Math.floor(total_seconds / (60 * 60));\n  const minutes = Math.floor(total_seconds / 60) % 60;\n  \n  const date = new Date(utc_value * 1000);\n  const jsDate = new Date(\n    date.getUTCFullYear(),\n    date.getUTCMonth(),\n    date.getUTCDate(),\n    hours,\n    minutes,\n    seconds\n  );\n  \n  return jsDate.toISOString();\n}\n\n// Функция для очистки значения (конвертация пустых строк в значения по умолчанию)\nfunction cleanValue(value, defaultValue = null) {\n  if (value === \"\" || value === undefined || value === null) {\n    return defaultValue;\n  }\n  return value;\n}\n\n// Обработка каждого элемента\nfor (const item of items) {\n  const data = item.json;\n  \n  const transformed = {\n    Event: cleanValue(data.Event, \"\"),\n    Date: excelDateToISO(data.Date),\n    Symbol: cleanValue(data.Symbol, \"\"),\n    Price: cleanValue(data.Price, 0),\n    Quantity: cleanValue(data.Quantity, 0),\n    Currency: cleanValue(data.Currency, \"\"),\n    FeeTax: cleanValue(data.FeeTax, 0),\n    Exchange: cleanValue(data.Exchange || data.Exchenge, \"\"),\n    NKD: cleanValue(data.NKD, 0),\n    FeeCurrency: cleanValue(data.FeeCurrency, \"\"),\n    DoNotAdjustCash: cleanValue(data.DoNotAdjustCash, false),\n    Note: cleanValue(data.Note, \"\")\n  };\n  \n  transformedItems.push({ json: transformed });\n}\n\nreturn transformedItems;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        656,
+        0
+      ],
+      "id": "ab11e8df-a3dd-4282-84b9-cee5b8ebf63b",
+      "name": "Transform Data"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        1104,
+        16
+      ],
+      "id": "c58eb299-37de-4430-9286-01e549cb5c03",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "value": "Mx0Nyr0grDFK3SNy",
+          "mode": "list",
+          "cachedResultName": "Operation_Kopilka",
+          "cachedResultUrl": "/projects/Q8U5Lyg2aQMd2T9K/datatables/Mx0Nyr0grDFK3SNy"
+        },
+        "matchType": "allConditions",
+        "returnAll": true
+      },
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        336,
+        192
+      ],
+      "id": "eb31480b-d61e-4117-ae2e-34ddaaaf1ce9",
+      "name": "Get row(s)"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 'items' уже содержит все входные элементы из Merge\n// Функция для формирования составного ключа по Event, Date и Quantity\nfunction makeKey(item) {\n  const e = item.json.Event;\n  const d = item.json.Date;\n  const q = item.json.Quantity;\n  return `${e}||${d}||${q}`;\n}\n\n// Подсчёт вхождений каждого ключа\nconst counts = {};\nfor (const item of items) {\n  const key = makeKey(item);\n  counts[key] = (counts[key] || 0) + 1;\n}\n\n// Фильтрация: оставляем только уникальные записи\nconst uniqueItems = items\n  .filter(item => counts[makeKey(item)] === 1)\n  .map(item => ({ json: item.json }));\n\nreturn uniqueItems;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1312,
+        16
+      ],
+      "id": "ac46231e-2f89-44fd-b8b3-950052801078",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "dataTableId": {
+          "__rl": true,
+          "value": "Mx0Nyr0grDFK3SNy",
+          "mode": "list",
+          "cachedResultName": "Operation_Kopilka",
+          "cachedResultUrl": "/projects/Q8U5Lyg2aQMd2T9K/datatables/Mx0Nyr0grDFK3SNy"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Price": "={{ $json.Price }}",
+            "Quantity": "={{ $json.Quantity }}",
+            "FeeTax": "={{ $json.FeeTax }}",
+            "NKD": "={{ $json.NKD }}",
+            "Event": "={{ $json.Event }}",
+            "Symbol": "={{ $json.Symbol }}",
+            "Date": "={{ $json.Date }}",
+            "Currency": "={{ $json.Currency }}",
+            "Exchange": "={{ $json.Exchange }}",
+            "FeeCurrency": "={{ $json.FeeCurrency }}",
+            "Note": "={{ $json.Note }}",
+            "DoNotAdjustCash": "={{ $json.DoNotAdjustCash }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Event",
+              "displayName": "Event",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Date",
+              "displayName": "Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Symbol",
+              "displayName": "Symbol",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Price",
+              "displayName": "Price",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Quantity",
+              "displayName": "Quantity",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Currency",
+              "displayName": "Currency",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "FeeTax",
+              "displayName": "FeeTax",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Exchange",
+              "displayName": "Exchange",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "NKD",
+              "displayName": "NKD",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "FeeCurrency",
+              "displayName": "FeeCurrency",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "DoNotAdjustCash",
+              "displayName": "DoNotAdjustCash",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "boolean",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Note",
+              "displayName": "Note",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1,
+      "position": [
+        1552,
+        16
+      ],
+      "id": "32910b28-936b-493a-8179-824d6821651b",
+      "name": "Insert row"
+    },
+    {
+      "parameters": {
+        "events": [
+          "FILE.UPLOADED"
+        ],
+        "targetType": "folder",
+        "targetId": "347000192644"
+      },
+      "type": "n8n-nodes-base.boxTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "eda2e29e-fcd2-4b5a-88a4-c07051d013e5",
+      "name": "Box Trigger",
+      "webhookId": "8affd877-77ed-4a2b-885d-284d616c66b6",
+      "credentials": {
+        "boxOAuth2Api": {
+          "id": "AhiRxexAUiclWJLU",
+          "name": "Box account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Download a file": {
+      "main": [
+        [
+          {
+            "node": "Extract from File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract from File": {
+      "main": [
+        [
+          {
+            "node": "Transform Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transform Data": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get row(s)": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Insert row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Box Trigger": {
+      "main": [
+        [
+          {
+            "node": "Download a file",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get row(s)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "730eb6a5-b662-4125-92ea-a9355a4ab049",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "d166ce8727f20d161e3bd52d65ba171c04dab9070977d2e6555d1cb327e0c832"
+  },
+  "id": "NQryz1ErIDgBsZWH",
+  "tags": []
+}

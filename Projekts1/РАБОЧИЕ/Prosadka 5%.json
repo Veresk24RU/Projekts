@@ -1,0 +1,392 @@
+{
+  "name": "Prosadka 5%",
+  "nodes": [
+    {
+      "parameters": {
+        "triggerTimes": {
+          "item": [
+            {
+              "mode": "custom",
+              "cronExpression": "32 20 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "640209b3-eae2-4413-80b4-788a29b0fcdb",
+      "name": "Cron",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [
+        -2896,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 10,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -2160,
+        352
+      ],
+      "id": "55d21043-d330-4429-bf08-e8077a05d471",
+      "name": "Loop Over Items"
+    },
+    {
+      "parameters": {
+        "url": "=https://iss.moex.com/iss/securities.json?iss.only=securities,boards,description",
+        "allowUnauthorizedCerts": true,
+        "options": {},
+        "queryParametersUi": {
+          "parameter": [
+            {
+              "name": "q",
+              "value": "={{ $json.ISIN }}"
+            },
+            {
+              "name": "iss.meta",
+              "value": "off"
+            }
+          ]
+        }
+      },
+      "id": "c3cfc95b-f415-49b6-87a1-dca089682de1",
+      "name": "ISIN → Security Info1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        -1664,
+        208
+      ],
+      "retryOnFail": false
+    },
+    {
+      "parameters": {
+        "jsCode": "const out = [];\n\nfor (const item of items) {\n  try {\n    const securities = item.json.securities;\n    if (!securities || !securities.data || !securities.data.length) continue;\n\n    const data = securities.data[0];\n    const columns = securities.columns;\n\n    const secidIndex = columns.indexOf(\"secid\");\n    const boardIndex = columns.indexOf(\"marketprice_boardid\");\n\n    const secid = data[secidIndex];\n    const boardid = data[boardIndex];\n\n    out.push({\n      json: {\n        SECID: secid,\n        BOARDID: boardid\n      }\n    });\n  } catch (e) {\n    // если данных нет — пропускаем\n  }\n}\n\nreturn out;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1408,
+        208
+      ],
+      "id": "129aae2e-8be7-4b41-b39d-9dab40cea58f",
+      "name": "Code_SECID&market"
+    },
+    {
+      "parameters": {
+        "jsCode": "const out = [];\n\nfor (const item of items) {\n  const history = item.json.history;\n  if (!history || !Array.isArray(history.data) || history.data.length === 0) {\n    continue;\n  }\n\n  const cols = history.columns;\n  const closeIdx = cols.indexOf(\"CLOSE\");\n  const dateIdx = cols.indexOf(\"TRADEDATE\");\n  const secidIdx = cols.indexOf(\"SECID\");\n  const boardIdx = cols.indexOf(\"BOARDID\");\n\n  // Фильтруем строки с корректным CLOSE\n  const validRows = history.data.filter(r => {\n    const val = r[closeIdx];\n    return val !== null && val !== undefined && val !== '';\n  });\n\n  if (validRows.length < 2) {\n    out.push({\n      json: {\n        SECID: validRows[0] ? validRows[0][secidIdx] : null,\n        BOARDID: validRows[0] ? validRows[0][boardIdx] : null,\n        WARNING: \"Недостаточно торговых дней для расчёта (меньше 2 с CLOSE)\"\n      }\n    });\n    continue;\n  }\n\n  const todayRow = validRows[0];   // свежая дата\n  const prevRow = validRows[1];    // предыдущая доступная дата\n\n  const today = todayRow[closeIdx];\n  const yesterday = prevRow[closeIdx];\n\n  const diff = ((today - yesterday) / yesterday) * 100;\n\n  out.push({\n    json: {\n      SECID: todayRow[secidIdx],\n      BOARDID: todayRow[boardIdx],\n      DATE_TODAY: todayRow[dateIdx],\n      DATE_YESTERDAY: prevRow[dateIdx],\n      CLOSE_TODAY: today,\n      CLOSE_YESTERDAY: yesterday,\n      DIFF: Number(diff.toFixed(2))\n    }\n  });\n}\n\nreturn out;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -912,
+        208
+      ],
+      "id": "6535023d-6839-4208-b3f4-e2338438c34d",
+      "name": "Procent",
+      "alwaysOutputData": false,
+      "executeOnce": false
+    },
+    {
+      "parameters": {
+        "url": "=https://iss.moex.com/iss/history/engines/stock/markets/bonds/boards/{{$json[\"BOARDID\"]}}/securities/{{$json[\"SECID\"]}}.json?limit=5&sort_order=desc\n\n",
+        "options": {},
+        "queryParametersUi": {
+          "parameter": [
+            {
+              "name": "iss.only=history",
+              "value": "history"
+            }
+          ]
+        }
+      },
+      "id": "999e6edb-a67e-42fa-80d7-b9a45c13c6d0",
+      "name": "MOEX History",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        -1136,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Aggregate Drops\nconst threshold = -5;  // можно поменять\nconst all = $input.all();\n\nif (!all || all.length === 0) {\n  return [\n    {\n      json: {\n        count: 0,\n        messageDrops: null,\n        messageNone: \"✅ Просадок не обнаружено ни по одному из активов\"\n      }\n    }\n  ];\n}\n\nconst drops = [];\nfor (const it of all) {\n  const j = it.json;\n  const diff = parseFloat(j.DIFF);\n  if (!isNaN(diff) && diff <= threshold) {\n    const secid = j.SECID || j.TICKER || 'UNKNOWN';\n    drops.push({ secid, diff: diff.toFixed(2) });\n  }\n}\n\nif (drops.length > 0) {\n  const parts = drops.map(d => `${d.secid} ${d.diff}%`);\n  return [\n    {\n      json: {\n        count: drops.length,\n        messageDrops: `📉 Обнаружены просадки ≥ ${Math.abs(threshold)}%: ${parts.join(', ')}`,\n        messageNone: null\n      }\n    }\n  ];\n} else {\n  return [\n    {\n      json: {\n        count: 0,\n        messageDrops: null,\n        messageNone: \"✅ Просадок не обнаружено ни по одному из активов\"\n      }\n    }\n  ];\n}\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -640,
+        208
+      ],
+      "id": "c7fd7f98-c6df-499b-b90b-051e95101531",
+      "name": "Aggregate Drops1"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "14ee6f21-1861-4736-b483-322f286b152b",
+              "leftValue": "={{$json[\"count\"]}}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -416,
+        208
+      ],
+      "id": "47769745-595a-4615-b3a0-f700bbe3820b",
+      "name": "Any Drops?"
+    },
+    {
+      "parameters": {
+        "chatId": "7732944652",
+        "text": "={{ $json[\"messageNone\"] }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        16,
+        384
+      ],
+      "id": "64984181-6084-494d-b5ab-652054be5017",
+      "name": "No_5%",
+      "webhookId": "406d446b-3e5b-4eb5-a250-205d6acfd899",
+      "credentials": {
+        "telegramApi": {
+          "id": "njv8jJjplu3gcH2f",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "7732944652",
+        "text": "={{ $json.messageDrops }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "id": "9f86e4a0-4559-45c9-9672-2482e5888f6a",
+      "name": "Yes_5%",
+      "webhookId": "406d446b-3e5b-4eb5-a250-205d6acfd899",
+      "credentials": {
+        "telegramApi": {
+          "id": "njv8jJjplu3gcH2f",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1TlhG0Wxa-xQxZjp0b4cdh-F93M9O3O483dfvN4b5-zs",
+          "mode": "list",
+          "cachedResultName": "ISIN_template",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1TlhG0Wxa-xQxZjp0b4cdh-F93M9O3O483dfvN4b5-zs/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1343851678,
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1TlhG0Wxa-xQxZjp0b4cdh-F93M9O3O483dfvN4b5-zs/edit#gid=1343851678"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -2592,
+        352
+      ],
+      "id": "5640e76f-a3bc-4166-9aac-83aea0652e4a",
+      "name": "Get row(s) in sheet",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "ApYu2hWdXvEbsEpl",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "name": "Replace Me",
+      "typeVersion": 1,
+      "position": [
+        -1920,
+        432
+      ],
+      "id": "fbdcaff3-3deb-488a-8010-5d24cb9c603c"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Cron": {
+      "main": [
+        [
+          {
+            "node": "Get row(s) in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Over Items": {
+      "main": [
+        [
+          {
+            "node": "ISIN → Security Info1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Replace Me",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ISIN → Security Info1": {
+      "main": [
+        [
+          {
+            "node": "Code_SECID&market",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_SECID&market": {
+      "main": [
+        [
+          {
+            "node": "MOEX History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Procent": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Drops1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "MOEX History": {
+      "main": [
+        [
+          {
+            "node": "Procent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Drops1": {
+      "main": [
+        [
+          {
+            "node": "Any Drops?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Drops?": {
+      "main": [
+        [
+          {
+            "node": "Yes_5%",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No_5%",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get row(s) in sheet": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Replace Me": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "ee652e11-ff07-4cf5-8211-b10bee5e370c",
+  "meta": {
+    "instanceId": "6ab2c7a42c00993decedbd487232ffe5a40cc87e68c91fa5da58d98c9a353b3b"
+  },
+  "id": "T4OgdI7q2c60DdX1",
+  "tags": []
+}
