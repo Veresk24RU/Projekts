@@ -1,0 +1,9 @@
+xlsx")
+
+
+# Target table and columns
+TABLE_NAME = "Operation_VTB"
+COLUMNS = [
+    "Portfolio",
+    "Event",
+    "
