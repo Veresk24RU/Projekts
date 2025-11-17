@@ -3,12 +3,10 @@ import re
 import sqlite3
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from datetime import datetime, time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Set
 from difflib import SequenceMatcher
-import sys
 from openpyxl import load_workbook
 from openpyxl.cell.cell import Cell
-from openpyxl import Workbook
 
 
 # Paths
@@ -16,11 +14,11 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 IN_DIR = os.path.join(BASE_DIR, "Read_report")
 OUT_DIR = os.path.join(BASE_DIR, "out")
 DB_PATH = os.path.join(OUT_DIR, "Operation_VTB.sqlite")
-TEST_XLSX = os.path.join(OUT_DIR, "X_Operation_VTB.xlsx")
 
 
 # Target table and columns
 TABLE_NAME = "Operation_VTB"
+CPT_TABLE = "Current_Portfolio"
 COLUMNS = [
     "Portfolio",
     "Event",
@@ -38,6 +36,7 @@ COLUMNS = [
     "Note",
 ]
 
+DuplicateKey = Tuple[Any, Any, Any, Any, Any, Any, Any, Any]
 
 PORTFOLIO_MAP = {
     "124JAU": "124JAU STANDART",
@@ -85,6 +84,28 @@ def init_db(conn: sqlite3.Connection) -> None:
         f"""
         CREATE INDEX IF NOT EXISTS idx_{TABLE_NAME}_dupe
         ON {TABLE_NAME} (Portfolio, Event, Date, Symbol, Quantity, Faceunit, Price, Sumtransaction)
+        """
+    )
+    # Таблица текущего портфеля
+    conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {CPT_TABLE} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            Portfolio TEXT NOT NULL,
+            ReportDate DATE,
+            SecType TEXT,
+            Name TEXT,
+            "Index" TEXT,
+            Symbol TEXT,
+            PlannedQty REAL,
+            Faceunit TEXT,
+            Price REAL,
+            Nominal REAL,
+            NKD REAL,
+            CouponDate DATE,
+            CouponRate REAL,
+            PlannedValRub REAL
+        )
         """
     )
     conn.commit()
@@ -166,6 +187,17 @@ def norm_ccy(code: Optional[str]) -> str:
     # Оставляем ISO, без лишних пробелов/кейса
     return s
 
+
+def date_only_str(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date().strftime("%Y-%m-%d")
+    s = dt(value)
+    if s:
+        return s.split(" ")[0]
+    return None
+
 def find_portfolio(ws) -> Optional[str]:
     # Ищем строку с «№ субсчета:» и берём код справа в той же строке
     for row in ws.iter_rows(values_only=False):
@@ -228,7 +260,7 @@ def read_table_simple(ws, start_row: int, header: List[str], skip_after_header_r
 def parse_opening_balances_v2(ws) -> Dict[str, Decimal]:
     title = "Сводная информация по субсчету Клиента"
     start = find_section(ws, title)
-    if not start:
+    if start is None:
         return {}
     header_row = start + 1
     # Робастный поиск колонок: учитываем возможные латинские буквы в заголовках
@@ -375,13 +407,8 @@ def parse_name_index_symbol(full: str) -> Tuple[str, str, str]:
     return name, index, symbol
 
 
-def exists_in_db(conn: sqlite3.Connection, row: Dict[str, Any]) -> bool:
-    sql = f"""
-        SELECT 1 FROM {TABLE_NAME}
-        WHERE Portfolio=? AND Event=? AND Date=? AND Symbol=? AND Quantity IS ? AND Faceunit=? AND Price IS ? AND Sumtransaction IS ?
-        LIMIT 1
-    """
-    params = (
+def make_duplicate_key(row: Dict[str, Any]) -> DuplicateKey:
+    return (
         row.get("Portfolio"),
         row.get("Event"),
         row.get("Date"),
@@ -391,7 +418,36 @@ def exists_in_db(conn: sqlite3.Connection, row: Dict[str, Any]) -> bool:
         row.get("Price"),
         row.get("Sumtransaction"),
     )
+
+
+def fetch_existing_duplicate_keys(conn: sqlite3.Connection, portfolio: Optional[str]) -> Set[DuplicateKey]:
+    """
+    Returns the set of duplicate signatures that existed before the current import.
+    Limiting by portfolio keeps the snapshot small and lets us allow duplicates inside a single file.
+    """
+    sql = f"""
+        SELECT Portfolio, Event, Date, Symbol, Quantity, Faceunit, Price, Sumtransaction
+        FROM {TABLE_NAME}
+    """
+    params: Tuple[Any, ...] = ()
+    if portfolio:
+        sql += " WHERE Portfolio=?"
+        params = (portfolio,)
     cur = conn.execute(sql, params)
+    return set(cur.fetchall())
+
+
+def exists_in_db(conn: sqlite3.Connection, row: Dict[str, Any], baseline_only: Optional[Set[DuplicateKey]] = None) -> bool:
+    key = make_duplicate_key(row)
+    if baseline_only is not None:
+        return key in baseline_only
+
+    sql = f"""
+        SELECT 1 FROM {TABLE_NAME}
+        WHERE Portfolio=? AND Event=? AND Date=? AND Symbol=? AND Quantity IS ? AND Faceunit=? AND Price IS ? AND Sumtransaction IS ?
+        LIMIT 1
+    """
+    cur = conn.execute(sql, key)
     return cur.fetchone() is not None
 
 
@@ -642,19 +698,6 @@ def insert_row(conn: sqlite3.Connection, row: Dict[str, Any]) -> int:
     return cur.lastrowid
 
 
-def export_to_test_xlsx(rows: List[Dict[str, Any]]) -> None:
-    from openpyxl import Workbook
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Test"
-    ws.append(COLUMNS)
-    # Стабилизируем порядок по дате-времени
-    rows_sorted = sorted(rows, key=lambda r: (r.get("Date") or ""))
-    for r in rows_sorted:
-        ws.append([r.get(c) for c in COLUMNS])
-    wb.save(TEST_XLSX)
-
-
 def _dump_row(ws, r: int, limit: int = 30) -> str:
     vals = []
     maxc = min(ws.max_column, limit)
@@ -675,7 +718,7 @@ def debug_section(ws, title: str) -> None:
 def process_dds(ws, portfolio: str) -> List[Dict[str, Any]]:
     title = "Движение денежных средств"
     start = find_section(ws, title)
-    if not start:
+    if start is None:
         return []
     header = ["Дата", "Сумма", "Валюта", "Тип операции", "Комментарий"]
     # После заголовка идёт строка с рынком → пропускаем 1 строку
@@ -768,10 +811,165 @@ def _map_columns_by_contains(ws, header_row: int, patterns: Dict[str, List[str]]
     return cols
 
 
+def find_report_date(ws) -> Optional[str]:
+    for row in ws.iter_rows(values_only=False):
+        for cell in row:
+            v = cell_str(cell)
+            if "Дата формирования отчета" in v:
+                row_idx = cell.row
+                for c in range(cell.column + 1, ws.max_column + 1):
+                    val = ws.cell(row=row_idx, column=c).value
+                    if val is not None and str(val).strip() != "":
+                        return date_only_str(val)
+                return None
+    return None
+
+
+def process_current_portfolio(ws, portfolio: str) -> List[Dict[str, Any]]:
+    title = "Отчёт об остатках ценных бумаг"
+    start = find_section(ws, title)
+    if start is None:
+        return []
+    header_row = start + 1
+    # Заголовки могут быть многострочными — работаем по подстрокам
+    def low_txt(r, c):
+        return cell_str(ws.cell(row=r, column=c)).lower().replace("\n", " ")
+
+    patterns = {
+        "tris": ["наименование ценной бумаги", "isin"],
+        "planned_qty": ["плановый исходящий остаток"],
+        "faceunit": ["валюта", "номинала"],
+        "price": ["цена", "%"],
+        "nominal": [" номинал"],
+        "nkd": ["нкд", "на конец периода"],
+        "coupon_date": ["дата выплаты", "дата погашения"],
+        "coupon_rate": ["ставка купона"],
+        "planned_val_rub": ["оценка планового исходящего остатка", "руб"],
+    }
+    cols = _map_columns_by_contains(ws, header_row, patterns)
+    # Уточнение колонки Nominal: избегаем совпадения с фразой "в валюте номинала" / "НКД"
+    hdr_low = {c: cell_str(ws.cell(row=header_row, column=c)).lower().replace("\n"," ") for c in range(1, ws.max_column+1)}
+    def is_nominal_header(txt: str) -> bool:
+        return ("номинал" in txt) and ("в валюте" not in txt) and ("валют" not in txt) and ("нкд" not in txt)
+    if cols.get("nominal"):
+        h = hdr_low.get(cols["nominal"], "")
+        if not is_nominal_header(h):
+            # попробуем найти более подходящую колонку
+            for c, low in hdr_low.items():
+                if is_nominal_header(low):
+                    cols["nominal"] = c
+                    break
+    else:
+        for c, low in hdr_low.items():
+            if is_nominal_header(low):
+                cols["nominal"] = c
+                break
+
+    # Отладочный вывод маппинга колонок текущего портфеля
+    try:
+        print(f"Debug: CPT cols mapped: {cols}")
+    except Exception:
+        pass
+    # Дата формирования отчета
+    rep_date = find_report_date(ws)
+
+    results: List[Dict[str, Any]] = []
+    sec_type: Optional[str] = None
+    sec_type_tokens = {"еврооблигация", "облигация", "пай", "акция"}
+    r = header_row + 1
+    while r <= ws.max_row:
+        # Текстовые значения в ключевых местах
+        first_val = cell_str(ws.cell(row=r, column=1)).strip()
+        tris_val = cell_str(ws.cell(row=r, column=cols.get("tris", 1))).strip() if cols.get("tris") else ""
+
+        # Окончание таблицы: строка с "ИТОГО:" в первом столбце или в столбце tris
+        if (first_val.upper() == "ИТОГО:" or tris_val.upper() == "ИТОГО:"):
+            break
+
+        # Определение блоков типа ЦБ: значение SecType находится в колонке tris,
+        # и это одна из: ЕВРООБЛИГАЦИЯ/ОБЛИГАЦИЯ/ПАЙ/АКЦИЯ, при этом прочие данные в строке отсутствуют
+        tris_low = tris_val.lower()
+        if tris_low in sec_type_tokens:
+            # проверим, что остальные ключевые колонки пустые (чтобы не принять строку-данные за заголовок типа)
+            others_empty = True
+            for key in ("planned_qty","faceunit","price","nominal","nkd","coupon_date","coupon_rate","planned_val_rub"):
+                c = cols.get(key)
+                if c and cell_str(ws.cell(row=r, column=c)) != "":
+                    others_empty = False
+                    break
+            if others_empty:
+                sec_type = tris_val
+                r += 1
+                continue
+
+        # Признак возможного окончания блока — полностью пустые ключевые колонки; проверим следующую строку
+        if cols.get("tris") and tris_val == "" and first_val == "":
+            nxt = r + 1
+            if nxt > ws.max_row or (cols.get("tris") and cell_str(ws.cell(row=nxt, column=cols["tris"])) == ""):
+                break
+        # Читаем строку данных
+        tris_raw = cell_str(ws.cell(row=r, column=cols.get("tris", 0))) if cols.get("tris") else ""
+        if not tris_raw.strip():
+            r += 1
+            continue
+        name, index, symbol = parse_name_index_symbol(tris_raw)
+        planned_qty = dec(ws.cell(row=r, column=cols.get("planned_qty", 0)).value) if cols.get("planned_qty") else None
+        faceunit = cell_str(ws.cell(row=r, column=cols.get("faceunit", 0))) if cols.get("faceunit") else ""
+        price = dec(ws.cell(row=r, column=cols.get("price", 0)).value) if cols.get("price") else None
+        nominal = dec(ws.cell(row=r, column=cols.get("nominal", 0)).value) if cols.get("nominal") else None
+        nkd = dec(ws.cell(row=r, column=cols.get("nkd", 0)).value) if cols.get("nkd") else None
+        coupon_date = ws.cell(row=r, column=cols.get("coupon_date", 0)).value if cols.get("coupon_date") else None
+        coupon_rate = dec(ws.cell(row=r, column=cols.get("coupon_rate", 0)).value) if cols.get("coupon_rate") else None
+        planned_val_rub = dec(ws.cell(row=r, column=cols.get("planned_val_rub", 0)).value) if cols.get("planned_val_rub") else None
+
+        # Пропуск строк с плановым исходящим остатком = 0
+        if planned_qty is not None and planned_qty == Decimal("0"):
+            r += 1
+            continue
+
+        row_out = {
+            "Portfolio": portfolio,
+            "ReportDate": rep_date,
+            "SecType": sec_type,
+            "Name": name,
+            "Index": index,
+            "Symbol": symbol,
+            "PlannedQty": float(planned_qty) if planned_qty is not None else None,
+            "Faceunit": faceunit,
+            "Price": float(price) if price is not None else None,
+            "Nominal": float(nominal) if nominal is not None else None,
+            "NKD": float(nkd) if nkd is not None else None,
+            "CouponDate": date_only_str(coupon_date),
+            "CouponRate": float((coupon_rate or Decimal("0"))) if coupon_rate is not None else None,
+            "PlannedValRub": float(planned_val_rub) if planned_val_rub is not None else None,
+        }
+        results.append(row_out)
+        r += 1
+    return results
+
+
+def upsert_current_portfolio(conn: sqlite3.Connection, ws, portfolio: str) -> None:
+    rows = process_current_portfolio(ws, portfolio)
+    if not rows:
+        return
+    conn.execute(f"DELETE FROM {CPT_TABLE} WHERE Portfolio=?", (portfolio,))
+    cols = [
+        "Portfolio","ReportDate","SecType","Name","Index","Symbol",
+        "PlannedQty","Faceunit","Price","Nominal","NKD","CouponDate","CouponRate","PlannedValRub",
+    ]
+    placeholders = ",".join(["?"]*len(cols))
+    sql = f"INSERT INTO {CPT_TABLE} (" + ",".join([f'"{c}"' if c=="Index" else c for c in cols]) + ") VALUES ("+placeholders+")"
+    for r in rows:
+        conn.execute(sql, [r.get(c) for c in cols])
+    conn.commit()
+
+
+
+
 def process_securities(ws, portfolio: str) -> List[Dict[str, Any]]:
     title = "Заключенные в отчетном периоде сделки с ценными бумагами"
     start = find_section(ws, title)
-    if not start:
+    if start is None:
         return []
     header_row = start + 1
     patterns = {
@@ -813,19 +1011,21 @@ def process_securities(ws, portfolio: str) -> List[Dict[str, Any]]:
         # стоп по полностью пустой строке по ключевым колонкам
         if all(cell_str(ws.cell(row=r, column=cols[k])) == "" for k in ("name", "dt") if k in cols):
             break
-        name_raw = ws.cell(row=r, column=cols["name"]).value if cols.get("name") else None
+        name_raw = cell_str(ws.cell(row=r, column=cols["name"])) if cols.get("name") else ""
         date_s = dt(ws.cell(row=r, column=cols["dt"]).value)
         side = cell_str(ws.cell(row=r, column=cols.get("side", 0))) if cols.get("side") else ""
         qty = dec(ws.cell(row=r, column=cols.get("qty", 0)).value) if cols.get("qty") else None
         faceunit = cell_str(ws.cell(row=r, column=cols.get("face", 0))) if cols.get("face") else ""
         price = dec(ws.cell(row=r, column=cols.get("price", 0)).value) if cols.get("price") else None
         currency = cell_str(ws.cell(row=r, column=cols.get("cur", 0))) if cols.get("cur") else ""
-        sumtx = dec(ws.cell(row=r, column=cols.get("sum", 0)).value) if cols.get("sum") else None
+        sum_col = cols.get("sum")
+        sumtx = dec(ws.cell(row=r, column=sum_col).value) if sum_col else None
         nkd = dec(ws.cell(row=r, column=cols.get("nkd", 0)).value) if cols.get("nkd") else None
         # Если колонка NKD не определена корректно, попробуем взять первое числовое значение справа от суммы
-        if (cols.get("nkd") and cols.get("sum") and cols["nkd"] == cols["sum"]) or (nkd is None and cols.get("sum")):
-            start_c = cols.get("sum") + 1
-            for c in range(start_c, ws.max_column + 1):
+        if sum_col and (
+            (cols.get("nkd") and cols["nkd"] == sum_col) or nkd is None
+        ):
+            for c in range(sum_col + 1, ws.max_column + 1):
                 v = dec(ws.cell(row=r, column=c).value)
                 if v is not None:
                     nkd = v
@@ -865,7 +1065,7 @@ def process_securities(ws, portfolio: str) -> List[Dict[str, Any]]:
 def process_fx(ws, portfolio: str) -> List[Dict[str, Any]]:
     title = "Заключенные в отчетном периоде сделки с иностранной валютой"
     start = find_section(ws, title)
-    if not start:
+    if start is None:
         return []
     header_row = start + 1
     patterns = {
@@ -896,7 +1096,8 @@ def process_fx(ws, portfolio: str) -> List[Dict[str, Any]]:
         qty = dec(ws.cell(row=r, column=cols.get("qty", 0)).value) if cols.get("qty") else None
         price = dec(ws.cell(row=r, column=cols.get("price", 0)).value) if cols.get("price") else None
         currency = cell_str(ws.cell(row=r, column=cols.get("cur", 0))) if cols.get("cur") else ""
-        sumtx = dec(ws.cell(row=r, column=cols.get("sum", 0)).value) if cols.get("sum") else None
+        sum_col = cols.get("sum")
+        sumtx = dec(ws.cell(row=r, column=sum_col).value) if sum_col else None
         fee1 = dec(ws.cell(row=r, column=cols.get("fee_settle", 0)).value) if cols.get("fee_settle") else None
         fee2 = dec(ws.cell(row=r, column=cols.get("fee_trade", 0)).value) if cols.get("fee_trade") else None
         note = cell_str(ws.cell(row=r, column=cols.get("comment", 0))) if cols.get("comment") else ""
@@ -947,24 +1148,24 @@ def validate_opening_balances(conn: sqlite3.Connection, ws, portfolio: str) -> N
     if not OPENING_BALANCE_CHECK_ENABLED:
         return
     reported = parse_opening_balances_v2(ws)
-    # Remains_* не ведутся — строгую проверку не поддерживаем
-    has_rows = conn.execute(f"SELECT 1 FROM {TABLE_NAME} WHERE Portfolio=? LIMIT 1", (portfolio,)).fetchone() is not None
+    has_rows = conn.execute(
+        f"SELECT 1 FROM {TABLE_NAME} WHERE Portfolio=? LIMIT 1", (portfolio,)
+    ).fetchone() is not None
     if not has_rows:
         for code in ("RUB", "CNY", "USD"):
             val = reported.get(code, Decimal("0"))
             if val != Decimal("0"):
                 raise RuntimeError("Входящий остатот денежных средств не совпадает.")
         return
-    expected = {"RUB": rr_db, "CNY": rc_db, "USD": ru_db}
+    expected = {"RUB": Decimal("0"), "CNY": Decimal("0"), "USD": Decimal("0")}
     for code in ("RUB", "CNY", "USD"):
         rep = reported.get(code)
-        exp = expected.get(code) or Decimal("0")
+        exp = expected.get(code, Decimal("0"))
         if rep is None:
             if exp != Decimal("0"):
                 raise RuntimeError("Входящий остатот денежных средств не совпадает.")
-        else:
-            if rep != exp:
-                raise RuntimeError("Входящий остатот денежных средств не совпадает.")
+        elif rep != exp:
+            raise RuntimeError("Входящий остатот денежных средств не совпадает.")
 
 
 def move_processed(src_path: str) -> None:
@@ -979,9 +1180,17 @@ def process_file(path: str, conn: sqlite3.Connection) -> Tuple[int, int]:
     wb = load_workbook(path, data_only=True)
     ws = wb.worksheets[0]
     portfolio = find_portfolio(ws) or "UNKNOWN"
+    # Snapshot duplicate keys for rows that existed before this file import.
+    existing_dupe_keys = fetch_existing_duplicate_keys(conn, portfolio)
 
     # Opening balances check (disabled via flag by default)
     validate_opening_balances(conn, ws, portfolio)
+
+    # Обновим таблицу текущего портфеля для данного портфеля
+    try:
+        upsert_current_portfolio(conn, ws, portfolio)
+    except Exception as e:
+        print(f"Warning: не удалось обновить текущий портфель для {portfolio}: {e}")
 
     # Parse sections
     rows_dds = process_dds(ws, portfolio)
@@ -1015,19 +1224,22 @@ def process_file(path: str, conn: sqlite3.Connection) -> Tuple[int, int]:
     rows_all.sort(key=lambda r: (r.get("Date") or ""))
 
     inserted: List[Dict[str, Any]] = []
+    dup_skipped = 0
     for row in rows_all:
         for k in ("Quantity", "Price", "Sumtransaction", "NKD", "FeeTax"):
-            if row.get(k) is not None:
-                row[k] = float(dec(row[k]))
+            if row.get(k) is None:
+                continue
+            val = dec(row[k])
+            if val is None:
+                continue
+            row[k] = float(val)
+        if exists_in_db(conn, row, baseline_only=existing_dupe_keys):
+            dup_skipped += 1
+            continue
         insert_row(conn, row)
         inserted.append(row)
 
     conn.commit()
-    if inserted:
-        try:
-            export_to_test_xlsx(inserted)
-        except PermissionError:
-            print("Warning: не удалось сохранить X_Operation_VTB.xlsx (занят приложением). Пропускаю экспорт.")
     return len(rows_all), len(inserted)
 
 
@@ -1035,22 +1247,6 @@ def main() -> None:
     ensure_dirs()
     conn = connect_db()
     init_db(conn)
-
-    # Export-only mode
-    if len(sys.argv) > 1 and sys.argv[1].lower() in {"export", "--export", "-e"}:
-        cur = conn.execute(
-            f"SELECT {', '.join(['\"Index\"' if c=='Index' else c for c in COLUMNS])} FROM {TABLE_NAME} ORDER BY Date, id"
-        )
-        rows = []
-        for rec in cur.fetchall():
-            row = {col: rec[i] for i, col in enumerate(COLUMNS)}
-            rows.append(row)
-        if rows:
-            try:
-                export_to_test_xlsx(rows)
-            except PermissionError:
-                print("Warning: не удалось сохранить X_Operation_VTB.xlsx (занят приложением). Пропускаю экспорт.")
-        return
 
     files = [
         os.path.join(IN_DIR, f)
